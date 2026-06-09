@@ -1,4 +1,6 @@
 #include"lib.h"
+#include <ctime>
+#include <cstdlib>
 
 struct OrbitCamera
 {
@@ -161,9 +163,12 @@ int main()
 
 	Shader coreShader("vertex_core.glsl", "fragment_core.glsl");
 
+	// Seed random
+	std::srand(static_cast<unsigned int>(std::time(nullptr)));
+
 	// Hardcoded length and width
-	int m = 10; // length
-	int n = 10; // width
+	int m = 20; // length
+	int n = 20; // width
 
 	std::vector<Vertex> vertices;
 	std::vector<GLuint> indices;
@@ -172,9 +177,14 @@ int main()
 	{
 		for (int j = 0; j < n; ++j)
 		{
+			float height = static_cast<float>(std::rand()) / (static_cast<float>(RAND_MAX / 3.0f));
 			Vertex v;
-			v.position = glm::vec3(i - m / 2.0f, 0.0f, j - n / 2.0f);
-			v.color = glm::vec3(0.8f, 0.8f, 0.8f);
+			v.position = glm::vec3(i - m / 2.0f, height, j - n / 2.0f);
+			
+			// Color based on height (Low = Blueish, High = Greenish/White)
+			float colorFactor = height / 3.0f;
+			v.color = glm::vec3(0.2f, 0.5f + colorFactor * 0.5f, 0.2f + (1.0f - colorFactor) * 0.3f);
+			
 			v.normal = glm::vec3(0.0f, 1.0f, 0.0f);
 			v.texCoord = glm::vec2(static_cast<float>(i) / m, static_cast<float>(j) / n);
 			vertices.push_back(v);
