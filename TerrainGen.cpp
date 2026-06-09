@@ -1,17 +1,15 @@
 #include"lib.h"
-#include <ctime>
-#include <cstdlib>
 
 struct OrbitCamera
 {
 	float yaw = -90.f;
-	float pitch = -20.f;
-	float distance = 18.f;
+	float pitch = -30.f;
+	float distance = 25.f;
 	float sensitivity = 0.12f;
 	float minPitch = -80.f;
 	float maxPitch = 80.f;
 	float minDistance = 2.f;
-	float maxDistance = 100.f;
+	float maxDistance = 200.f;
 	bool firstMouse = true;
 	double lastMouseX = 0.0;
 	double lastMouseY = 0.0;
@@ -40,6 +38,9 @@ void frame_buffer_size_callback(GLFWwindow* window, int width, int height)
 
 void mouse_callback(GLFWwindow* window, double xpos, double ypos)
 {
+	ImGuiIO& io = ImGui::GetIO();
+	if (io.WantCaptureMouse) return;
+
 	if (gCamera.firstMouse)
 	{
 		gCamera.lastMouseX = xpos;
@@ -76,6 +77,9 @@ void mouse_callback(GLFWwindow* window, double xpos, double ypos)
 
 void scroll_callback(GLFWwindow* window, double xoffset, double yoffset)
 {
+	ImGuiIO& io = ImGui::GetIO();
+	if (io.WantCaptureMouse) return;
+
 	gCamera.distance -= static_cast<float>(yoffset) * 2.0f;
 	gCamera.distance = glm::clamp(gCamera.distance, gCamera.minDistance, gCamera.maxDistance);
 }
@@ -86,6 +90,9 @@ void updateInput(GLFWwindow* window)
 	{
 		glfwSetWindowShouldClose(window, GLFW_TRUE);
 	}
+
+	ImGuiIO& io = ImGui::GetIO();
+	if (io.WantCaptureKeyboard) return;
 
 	const float moveSpeed = 0.15f;
 	const float yawRad = glm::radians(gCamera.yaw);
@@ -117,6 +124,48 @@ void updateInput(GLFWwindow* window)
 	if (glfwGetKey(window, GLFW_KEY_Q) == GLFW_PRESS)
 	{
 		gOrbitTarget.y -= moveSpeed;
+	}
+}
+
+void generateTerrain(int m, int n, float heightScale, std::vector<Vertex>& vertices, std::vector<GLuint>& indices)
+{
+	vertices.clear();
+	indices.clear();
+
+	for (int i = 0; i < m; ++i)
+	{
+		for (int j = 0; j < n; ++j)
+		{
+			float height = (static_cast<float>(std::rand()) / (static_cast<float>(RAND_MAX))) * heightScale * 5.0f;
+			Vertex v;
+			v.position = glm::vec3(i - m / 2.0f, height, j - n / 2.0f);
+			
+			float colorFactor = height / (5.0f * (heightScale + 0.1f));
+			v.color = glm::vec3(0.2f, 0.5f + colorFactor * 0.5f, 0.2f + (1.0f - colorFactor) * 0.3f);
+			
+			v.normal = glm::vec3(0.0f, 1.0f, 0.0f);
+			v.texCoord = glm::vec2(static_cast<float>(i) / m, static_cast<float>(j) / n);
+			vertices.push_back(v);
+		}
+	}
+
+	for (int i = 0; i < m - 1; ++i)
+	{
+		for (int j = 0; j < n - 1; ++j)
+		{
+			int topLeft = i * n + j;
+			int topRight = topLeft + 1;
+			int bottomLeft = (i + 1) * n + j;
+			int bottomRight = bottomLeft + 1;
+
+			indices.push_back(topLeft);
+			indices.push_back(bottomLeft);
+			indices.push_back(topRight);
+
+			indices.push_back(topRight);
+			indices.push_back(bottomLeft);
+			indices.push_back(bottomRight);
+		}
 	}
 }
 
@@ -157,94 +206,94 @@ int main()
 		return -1;
 	}
 
+	// Setup Dear ImGui context
+	IMGUI_CHECKVERSION();
+	ImGui::CreateContext();
+	ImGuiIO& io = ImGui::GetIO(); (void)io;
+	ImGui::StyleColorsDark();
+
+	// Setup Platform/Renderer backends
+	ImGui_ImplGlfw_InitForOpenGL(window, true);
+	ImGui_ImplOpenGL3_Init("#version 330");
+
 	glViewport(0, 0, WINDOW_WIDTH, WINDOW_HEIGHT);
 	glClearColor(0.1f, 0.1f, 0.1f, 1.f);
 	glEnable(GL_DEPTH_TEST);
 
 	Shader coreShader("vertex_core.glsl", "fragment_core.glsl");
 
-	// Seed random
 	std::srand(static_cast<unsigned int>(std::time(nullptr)));
 
-	// Hardcoded length and width
-	int m = 20; // length
-	int n = 20; // width
+	int m = 20;
+	int n = 20;
+	float heightScale = 0.5f;
 
 	std::vector<Vertex> vertices;
 	std::vector<GLuint> indices;
 
-	for (int i = 0; i < m; ++i)
-	{
-		for (int j = 0; j < n; ++j)
-		{
-			float height = static_cast<float>(std::rand()) / (static_cast<float>(RAND_MAX / 3.0f));
-			Vertex v;
-			v.position = glm::vec3(i - m / 2.0f, height, j - n / 2.0f);
-			
-			// Color based on height (Low = Blueish, High = Greenish/White)
-			float colorFactor = height / 3.0f;
-			v.color = glm::vec3(0.2f, 0.5f + colorFactor * 0.5f, 0.2f + (1.0f - colorFactor) * 0.3f);
-			
-			v.normal = glm::vec3(0.0f, 1.0f, 0.0f);
-			v.texCoord = glm::vec2(static_cast<float>(i) / m, static_cast<float>(j) / n);
-			vertices.push_back(v);
-		}
-	}
-
-	for (int i = 0; i < m - 1; ++i)
-	{
-		for (int j = 0; j < n - 1; ++j)
-		{
-			int topLeft = i * n + j;
-			int topRight = topLeft + 1;
-			int bottomLeft = (i + 1) * n + j;
-			int bottomRight = bottomLeft + 1;
-
-			indices.push_back(topLeft);
-			indices.push_back(bottomLeft);
-			indices.push_back(topRight);
-
-			indices.push_back(topRight);
-			indices.push_back(bottomLeft);
-			indices.push_back(bottomRight);
-		}
-	}
+	generateTerrain(m, n, heightScale, vertices, indices);
 
 	GLuint vao, vbo, ebo;
 	glGenVertexArrays(1, &vao);
 	glGenBuffers(1, &vbo);
 	glGenBuffers(1, &ebo);
 
-	glBindVertexArray(vao);
+	auto uploadToGPU = [&]() {
+		glBindVertexArray(vao);
+		glBindBuffer(GL_ARRAY_BUFFER, vbo);
+		glBufferData(GL_ARRAY_BUFFER, vertices.size() * sizeof(Vertex), vertices.data(), GL_STATIC_DRAW);
+		glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ebo);
+		glBufferData(GL_ELEMENT_ARRAY_BUFFER, indices.size() * sizeof(GLuint), indices.data(), GL_STATIC_DRAW);
 
-	glBindBuffer(GL_ARRAY_BUFFER, vbo);
-	glBufferData(GL_ARRAY_BUFFER, vertices.size() * sizeof(Vertex), vertices.data(), GL_STATIC_DRAW);
+		glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex), (GLvoid*)offsetof(Vertex, position));
+		glEnableVertexAttribArray(0);
+		glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex), (GLvoid*)offsetof(Vertex, color));
+		glEnableVertexAttribArray(1);
+		glVertexAttribPointer(2, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex), (GLvoid*)offsetof(Vertex, normal));
+		glEnableVertexAttribArray(2);
+		glVertexAttribPointer(3, 2, GL_FLOAT, GL_FALSE, sizeof(Vertex), (GLvoid*)offsetof(Vertex, texCoord));
+		glEnableVertexAttribArray(3);
+		glBindVertexArray(0);
+	};
 
-	glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ebo);
-	glBufferData(GL_ELEMENT_ARRAY_BUFFER, indices.size() * sizeof(GLuint), indices.data(), GL_STATIC_DRAW);
-
-	// Position
-	glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex), (GLvoid*)offsetof(Vertex, position));
-	glEnableVertexAttribArray(0);
-	// Color
-	glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex), (GLvoid*)offsetof(Vertex, color));
-	glEnableVertexAttribArray(1);
-	// Normal
-	glVertexAttribPointer(2, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex), (GLvoid*)offsetof(Vertex, normal));
-	glEnableVertexAttribArray(2);
-	// TexCoord
-	glVertexAttribPointer(3, 2, GL_FLOAT, GL_FALSE, sizeof(Vertex), (GLvoid*)offsetof(Vertex, texCoord));
-	glEnableVertexAttribArray(3);
-
-	glBindVertexArray(0);
+	uploadToGPU();
 
 	glm::mat4 ModelMatrix(1.f);
-	glm::mat4 ProjectionMatrix = glm::perspective(glm::radians(45.f), static_cast<float>(WINDOW_WIDTH) / WINDOW_HEIGHT, 0.1f, 100.f);
+	glm::mat4 ProjectionMatrix = glm::perspective(glm::radians(45.f), static_cast<float>(WINDOW_WIDTH) / WINDOW_HEIGHT, 0.1f, 200.f);
 
 	while (!glfwWindowShouldClose(window))
 	{
 		updateInput(window);
 		glfwPollEvents();
+
+		// Start the Dear ImGui frame
+		ImGui_ImplOpenGL3_NewFrame();
+		ImGui_ImplGlfw_NewFrame();
+		ImGui::NewFrame();
+
+		{
+			ImGui::Begin("Terrain Settings");
+			ImGui::Text("Grid Dimensions");
+			bool changed = false;
+			changed |= ImGui::SliderInt("Length", &m, 2, 100);
+			changed |= ImGui::SliderInt("Width", &n, 2, 100);
+			changed |= ImGui::SliderFloat("Height Randomizer Scale", &heightScale, 0.0f, 1.0f);
+
+			if (ImGui::Button("Regenerate Terrain") || (changed && (m*n < 5000))) // Auto-regen for small grids
+			{
+				generateTerrain(m, n, heightScale, vertices, indices);
+				uploadToGPU();
+			}
+			
+			ImGui::Separator();
+			ImGui::Text("Controls:");
+			ImGui::BulletText("Left Mouse: Orbit");
+			ImGui::BulletText("Right Mouse / WASD: Pan");
+			ImGui::BulletText("Q/E: Up/Down");
+			ImGui::BulletText("Scroll: Zoom");
+			
+			ImGui::End();
+		}
 
 		glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
@@ -261,8 +310,17 @@ int main()
 		glDrawElements(GL_TRIANGLES, static_cast<GLsizei>(indices.size()), GL_UNSIGNED_INT, 0);
 		glBindVertexArray(0);
 
+		// Rendering ImGui
+		ImGui::Render();
+		ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
+
 		glfwSwapBuffers(window);
 	}
+
+	// Cleanup
+	ImGui_ImplOpenGL3_Shutdown();
+	ImGui_ImplGlfw_Shutdown();
+	ImGui::DestroyContext();
 
 	glDeleteVertexArrays(1, &vao);
 	glDeleteBuffers(1, &vbo);

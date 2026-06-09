@@ -26,7 +26,10 @@ mkdir -p build
 ### 2. Build the project
 From the project root run:
 ```bash
-g++ -std=c++17 TerrainGen.cpp Linking/glad.c -I./Linking/include -I./headers -o build/TerrainGen.exe -lglfw3 -lopengl32 -lgdi32
+g++ -std=c++17 TerrainGen.cpp Linking/glad.c \
+  Linking/imgui/imgui*.cpp Linking/imgui/backends/imgui_impl_*.cpp \
+  -I./Linking/include -I./headers -I./Linking/imgui -I./Linking/imgui/backends \
+  -o build/TerrainGen.exe -lglfw3 -lopengl32 -lgdi32
 ```
 
 ### 3. Run the application
@@ -36,7 +39,10 @@ g++ -std=c++17 TerrainGen.cpp Linking/glad.c -I./Linking/include -I./headers -o 
 
 If linking fails, add extra Windows system libs:
 ```bash
-g++ -std=c++17 TerrainGen.cpp Linking/glad.c -I./Linking/include -I./headers -o build/TerrainGen.exe -lglfw3 -lopengl32 -lgdi32 -luser32 -lkernel32 -lwinmm
+g++ -std=c++17 TerrainGen.cpp Linking/glad.c \
+  Linking/imgui/imgui*.cpp Linking/imgui/backends/imgui_impl_*.cpp \
+  -I./Linking/include -I./headers -I./Linking/imgui -I./Linking/imgui/backends \
+  -o build/TerrainGen.exe -lglfw3 -lopengl32 -lgdi32 -luser32 -lkernel32 -lwinmm
 ```
 
 ## Running on Linux
@@ -57,7 +63,8 @@ mkdir -p build
 From the project root run:
 ```bash
 g++ -std=c++17 TerrainGen.cpp Linking/glad.c \
-  -I./Linking/include -I./headers \
+  Linking/imgui/imgui*.cpp Linking/imgui/backends/imgui_impl_*.cpp \
+  -I./Linking/include -I./headers -I./Linking/imgui -I./Linking/imgui/backends \
   -o build/TerrainGen \
   -lglfw -lGL -ldl -pthread
 ```
@@ -70,7 +77,7 @@ If additional X11 libs are needed, append:
 ./build/TerrainGen
 ```
 
-The current `main()` renders a 10x10 wireframe grid. Close the window via the window controls or by pressing ESC.
+The current `main()` renders a dynamic 3D wireframe terrain. You can use the "Terrain Settings" GUI to adjust dimensions and randomization.
 
 ## Notes
 - Header files were moved into the `headers/` folder; build commands and IDE include paths above reference that.
