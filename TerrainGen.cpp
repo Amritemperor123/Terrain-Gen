@@ -9,7 +9,7 @@ struct OrbitCamera
 	float minPitch = -80.f;
 	float maxPitch = 80.f;
 	float minDistance = 2.f;
-	float maxDistance = 200.f;
+	float maxDistance = 100000.f;
 	bool firstMouse = true;
 	double lastMouseX = 0.0;
 	double lastMouseY = 0.0;
@@ -127,25 +127,70 @@ void updateInput(GLFWwindow* window)
 	}
 }
 
-void generateTerrain(int m, int n, float heightScale, std::vector<Vertex>& vertices, std::vector<GLuint>& indices)
+void generateTerrain(int m, int n, int numHills, float maxRadius, float heightScale, std::vector<Vertex>& vertices, std::vector<GLuint>& indices)
 {
 	vertices.clear();
 	indices.clear();
+
+	std::vector<float> heights(m * n, 0.0f);
+
+	for (int k = 0; k < numHills; ++k)
+	{
+		float cx = static_cast<float>(std::rand() % m);
+		float cz = static_cast<float>(std::rand() % n);
+		float radius = (static_cast<float>(std::rand()) / RAND_MAX) * maxRadius + 2.0f;
+		float h = ((static_cast<float>(std::rand()) / RAND_MAX) * 2.0f - 1.0f) * heightScale * 15.0f;
+
+		for (int i = 0; i < m; ++i)
+		{
+			for (int j = 0; j < n; ++j)
+			{
+				float dx = static_cast<float>(i) - cx;
+				float dz = static_cast<float>(j) - cz;
+				float dist = std::sqrt(dx * dx + dz * dz);
+				if (dist < radius)
+				{
+					// Cosine falloff
+					float falloff = 0.5f * (std::cos(3.14159265f * dist / radius) + 1.0f);
+					heights[i * n + j] += h * falloff;
+				}
+			}
+		}
+	}
 
 	for (int i = 0; i < m; ++i)
 	{
 		for (int j = 0; j < n; ++j)
 		{
-			float height = (static_cast<float>(std::rand()) / (static_cast<float>(RAND_MAX))) * heightScale * 5.0f;
+			float height = heights[i * n + j];
 			Vertex v;
 			v.position = glm::vec3(i - m / 2.0f, height, j - n / 2.0f);
-			
-			float colorFactor = height / (5.0f * (heightScale + 0.1f));
+
+			float colorFactor = (height + 5.0f) / 10.0f;
+			colorFactor = glm::clamp(colorFactor, 0.0f, 1.0f);
 			v.color = glm::vec3(0.2f, 0.5f + colorFactor * 0.5f, 0.2f + (1.0f - colorFactor) * 0.3f);
-			
+
 			v.normal = glm::vec3(0.0f, 1.0f, 0.0f);
 			v.texCoord = glm::vec2(static_cast<float>(i) / m, static_cast<float>(j) / n);
 			vertices.push_back(v);
+		}
+	}
+
+	// Recalculate normals for lighting
+	for (int i = 0; i < m; ++i)
+	{
+		for (int j = 0; j < n; ++j)
+		{
+			float hL = (i > 0) ? heights[(i - 1) * n + j] : heights[i * n + j];
+			float hR = (i < m - 1) ? heights[(i + 1) * n + j] : heights[i * n + j];
+			float hD = (j > 0) ? heights[i * n + (j - 1)] : heights[i * n + j];
+			float hU = (j < n - 1) ? heights[i * n + (j + 1)] : heights[i * n + j];
+
+			glm::vec3 normal;
+			normal.x = hL - hR;
+			normal.y = 2.0f;
+			normal.z = hD - hU;
+			vertices[i * n + j].normal = glm::normalize(normal);
 		}
 	}
 
@@ -224,14 +269,16 @@ int main()
 
 	std::srand(static_cast<unsigned int>(std::time(nullptr)));
 
-	int m = 20;
-	int n = 20;
+	int m = 50;
+	int n = 50;
 	float heightScale = 0.5f;
+	int numHills = 15;
+	float maxHillRadius = 20.0f;
 
 	std::vector<Vertex> vertices;
 	std::vector<GLuint> indices;
 
-	generateTerrain(m, n, heightScale, vertices, indices);
+	generateTerrain(m, n, numHills, maxHillRadius, heightScale, vertices, indices);
 
 	GLuint vao, vbo, ebo;
 	glGenVertexArrays(1, &vao);
@@ -275,13 +322,18 @@ int main()
 			ImGui::Begin("Terrain Settings");
 			ImGui::Text("Grid Dimensions");
 			bool changed = false;
-			changed |= ImGui::SliderInt("Length", &m, 2, 100);
-			changed |= ImGui::SliderInt("Width", &n, 2, 100);
-			changed |= ImGui::SliderFloat("Height Randomizer Scale", &heightScale, 0.0f, 1.0f);
+			changed |= ImGui::SliderInt("Length", &m, 2, 200);
+			changed |= ImGui::SliderInt("Width", &n, 2, 200);
+			
+			ImGui::Separator();
+			ImGui::Text("Hill Settings");
+			changed |= ImGui::SliderInt("Number of Hills", &numHills, 1, 100);
+			changed |= ImGui::SliderFloat("Max Hill Radius", &maxHillRadius, 1.0f, 50.0f);
+			changed |= ImGui::SliderFloat("Height Scale", &heightScale, 0.0f, 2.0f);
 
-			if (ImGui::Button("Regenerate Terrain") || (changed && (m*n < 5000))) // Auto-regen for small grids
+			if (ImGui::Button("Regenerate Terrain") || (changed && (m*n <= 10000))) // Auto-regen for manageable grids
 			{
-				generateTerrain(m, n, heightScale, vertices, indices);
+				generateTerrain(m, n, numHills, maxHillRadius, heightScale, vertices, indices);
 				uploadToGPU();
 			}
 			
