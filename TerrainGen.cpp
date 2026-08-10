@@ -1,4 +1,18 @@
 #include"lib.h"
+#include <future>
+#include <atomic>
+#include <mutex>
+#include <random>
+
+// Force discrete GPU on hybrid (Optimus/PowerXpress) laptops.
+// NVIDIA's OpenGL driver scans the EXE export table for NvOptimusEnablement;
+// if set to 1, Optimus routes the OpenGL context to the dGPU instead of the iGPU.
+// The AMD equivalent achieves the same for AMD hybrid setups.
+extern "C"
+{
+    __declspec(dllexport) unsigned long NvOptimusEnablement = 0x00000001;
+    __declspec(dllexport) int AmdPowerXpressRequestHighPerformance = 1;
+}
 
 struct OrbitCamera
 {
@@ -127,26 +141,32 @@ void updateInput(GLFWwindow* window)
 	}
 }
 
-void generateTerrain(int m, int n, int numHills, float maxRadius, float heightScale, std::vector<Vertex>& vertices, std::vector<GLuint>& indices)
+void generateTerrain(int m, int n, int numHills, float maxRadius, float heightScale, int smoothingPasses, std::vector<Vertex>& vertices, std::vector<GLuint>& indices)
 {
 	vertices.clear();
 	indices.clear();
+
+	// Thread-safe RNG: each call gets its own generator so the worker thread
+	// never races with main() or any other thread.
+	std::mt19937 rng(static_cast<unsigned int>(
+		std::random_device{}() ^ static_cast<unsigned int>(std::time(nullptr))));
+	std::uniform_real_distribution<float> distPos01(0.0f, 1.0f);
 
 	std::vector<float> heights(m * n, 0.0f);
 
 	for (int k = 0; k < numHills; ++k)
 	{
-		float cx = static_cast<float>(std::rand() % m);
-		float cz = static_cast<float>(std::rand() % n);
-		float radius = (static_cast<float>(std::rand()) / RAND_MAX) * maxRadius + 2.0f;
-		float h = ((static_cast<float>(std::rand()) / RAND_MAX) * 2.0f - 1.0f) * heightScale * 15.0f;
+		float cx     = distPos01(rng) * static_cast<float>(m - 1);
+		float cz     = distPos01(rng) * static_cast<float>(n - 1);
+		float radius = distPos01(rng) * maxRadius + 2.0f;
+		float h      = (distPos01(rng) * 2.0f - 1.0f) * heightScale * 15.0f;
 
 		for (int i = 0; i < m; ++i)
 		{
 			for (int j = 0; j < n; ++j)
 			{
-				float dx = static_cast<float>(i) - cx;
-				float dz = static_cast<float>(j) - cz;
+				float dx   = static_cast<float>(i) - cx;
+				float dz   = static_cast<float>(j) - cz;
 				float dist = std::sqrt(dx * dx + dz * dz);
 				if (dist < radius)
 				{
@@ -156,6 +176,37 @@ void generateTerrain(int m, int n, int numHills, float maxRadius, float heightSc
 				}
 			}
 		}
+	}
+
+	// --- Box-blur smoothing passes ---
+	// Each pass replaces every height with the weighted average of its 3x3
+	// neighbourhood. Multiple passes approximate a Gaussian blur, which
+	// kills isolated spikes while leaving broad terrain features intact.
+	for (int pass = 0; pass < smoothingPasses; ++pass)
+	{
+		std::vector<float> smoothed(m * n, 0.0f);
+		for (int i = 0; i < m; ++i)
+		{
+			for (int j = 0; j < n; ++j)
+			{
+				float sum  = 0.0f;
+				int   count = 0;
+				for (int di = -1; di <= 1; ++di)
+				{
+					for (int dj = -1; dj <= 1; ++dj)
+					{
+						int ni = i + di, nj = j + dj;
+						if (ni >= 0 && ni < m && nj >= 0 && nj < n)
+						{
+							sum += heights[ni * n + nj];
+							++count;
+						}
+					}
+				}
+				smoothed[i * n + j] = sum / static_cast<float>(count);
+			}
+		}
+		heights = std::move(smoothed);
 	}
 
 	for (int i = 0; i < m; ++i)
@@ -267,18 +318,26 @@ int main()
 
 	Shader coreShader("vertex_core.glsl", "fragment_core.glsl");
 
-	std::srand(static_cast<unsigned int>(std::time(nullptr)));
+	// std::srand removed — generateTerrain now seeds its own mt19937 per call.
 
 	int m = 50;
 	int n = 50;
 	float heightScale = 0.5f;
 	int numHills = 15;
 	float maxHillRadius = 20.0f;
+	int smoothingPasses = 2;   // box-blur passes to remove height outliers
 
 	std::vector<Vertex> vertices;
 	std::vector<GLuint> indices;
 
-	generateTerrain(m, n, numHills, maxHillRadius, heightScale, vertices, indices);
+	// --- Async terrain generation state ---
+	std::future<void>   terrainFuture;
+	std::vector<Vertex> pendingVertices;
+	std::vector<GLuint> pendingIndices;
+	std::atomic<bool>   isGenerating{ false };
+	std::mutex          pendingMutex;
+	bool                uploadPending{ false };
+
 
 	GLuint vao, vbo, ebo;
 	glGenVertexArrays(1, &vao);
@@ -303,7 +362,30 @@ int main()
 		glBindVertexArray(0);
 	};
 
-	uploadToGPU();
+	// --- Helper: launch terrain generation on a worker thread ---
+	// Captures all terrain parameters by VALUE (snapshot) so slider drags
+	// mid-generation cannot cause a data race.
+	auto launchGeneration = [&]() {
+		if (isGenerating) return;          // ignore if already running
+		isGenerating = true;
+		int    sm = m, sn = n, sHills = numHills, sPasses = smoothingPasses;
+		float  sRadius = maxHillRadius, sScale = heightScale;
+		terrainFuture = std::async(std::launch::async, [&, sm, sn, sHills, sRadius, sScale, sPasses]() {
+			std::vector<Vertex>  v;
+			std::vector<GLuint>  idx;
+			generateTerrain(sm, sn, sHills, sRadius, sScale, sPasses, v, idx);
+			{
+				std::lock_guard<std::mutex> lk(pendingMutex);
+				pendingVertices = std::move(v);
+				pendingIndices  = std::move(idx);
+				uploadPending   = true;
+			}
+			isGenerating = false;
+		});
+	};
+
+	// Kick off the initial terrain asynchronously
+	launchGeneration();
 
 	glm::mat4 ModelMatrix(1.f);
 	glm::mat4 ProjectionMatrix = glm::perspective(glm::radians(45.f), static_cast<float>(WINDOW_WIDTH) / WINDOW_HEIGHT, 0.1f, 200.f);
@@ -313,6 +395,19 @@ int main()
 		updateInput(window);
 		glfwPollEvents();
 
+		// --- Check if the worker thread finished; swap buffers and upload on the GL thread ---
+		if (uploadPending)
+		{
+			std::lock_guard<std::mutex> lk(pendingMutex);
+			if (uploadPending)
+			{
+				vertices      = std::move(pendingVertices);
+				indices       = std::move(pendingIndices);
+				uploadToGPU();
+				uploadPending = false;
+			}
+		}
+
 		// Start the Dear ImGui frame
 		ImGui_ImplOpenGL3_NewFrame();
 		ImGui_ImplGlfw_NewFrame();
@@ -320,22 +415,42 @@ int main()
 
 		{
 			ImGui::Begin("Terrain Settings");
+
+			// Spinner animation while the worker thread is busy
+			if (isGenerating)
+			{
+				const char* spinFrames[] = { "| Generating...", "/ Generating...", "- Generating...", "\\ Generating..." };
+				int frame = static_cast<int>(ImGui::GetTime() * 8.0) % 4;
+				ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.2f, 1.0f), "%s", spinFrames[frame]);
+				ImGui::Separator();
+			}
+
+			// Disable all controls while a generation is in flight
+			ImGui::BeginDisabled(isGenerating.load());
+
 			ImGui::Text("Grid Dimensions");
 			bool changed = false;
 			changed |= ImGui::SliderInt("Length", &m, 2, 200);
 			changed |= ImGui::SliderInt("Width", &n, 2, 200);
-			
+
 			ImGui::Separator();
 			ImGui::Text("Hill Settings");
 			changed |= ImGui::SliderInt("Number of Hills", &numHills, 1, 100);
 			changed |= ImGui::SliderFloat("Max Hill Radius", &maxHillRadius, 1.0f, 50.0f);
 			changed |= ImGui::SliderFloat("Height Scale", &heightScale, 0.0f, 2.0f);
+			ImGui::Separator();
+			ImGui::Text("Smoothing");
+			ImGui::SetNextItemWidth(-1);
+			changed |= ImGui::SliderInt("Blur Passes", &smoothingPasses, 0, 10);
+			ImGui::TextDisabled("0 = raw, 1-2 = smooth, 5+ = very smooth");
 
-			if (ImGui::Button("Regenerate Terrain") || (changed && (m*n <= 10000))) // Auto-regen for manageable grids
+			// Auto-regen on any slider change (no size cap — generation is non-blocking now)
+			if (ImGui::Button("Regenerate Terrain") || changed)
 			{
-				generateTerrain(m, n, numHills, maxHillRadius, heightScale, vertices, indices);
-				uploadToGPU();
+				launchGeneration();
 			}
+
+			ImGui::EndDisabled();
 			
 			ImGui::Separator();
 			ImGui::Text("Controls:");
