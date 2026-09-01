@@ -269,6 +269,8 @@ int main()
 	glm::mat4 ModelMatrix(1.f);
 	glm::mat4 ProjectionMatrix = glm::perspective(glm::radians(45.f), static_cast<float>(WINDOW_WIDTH) / WINDOW_HEIGHT, 0.1f, 200.f);
 
+	bool wireframeMode = false;
+
 	while (!glfwWindowShouldClose(window))
 	{
 		updateInput(window);
@@ -350,6 +352,10 @@ int main()
 			}
 
 			ImGui::Separator();
+			ImGui::Text("Render Display");
+			ImGui::Checkbox("Wireframe Terrain Mode", &wireframeMode);
+
+			ImGui::Separator();
 			ImGui::Text("Controls:");
 			ImGui::BulletText("Left Mouse: Orbit");
 			ImGui::BulletText("Right Mouse / WASD: Pan");
@@ -404,11 +410,11 @@ int main()
 		coreShader.setMat4fv(ViewMatrix, "ViewMatrix");
 		coreShader.setMat4fv(ProjectionMatrix, "ProjectionMatrix");
 
-		// Draw terrain mesh (wireframe mode)
+		// Draw terrain mesh (solid object mode by default)
 		if (!indices.empty())
 		{
 			glBindVertexArray(vao);
-			glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
+			glPolygonMode(GL_FRONT_AND_BACK, wireframeMode ? GL_LINE : GL_FILL);
 			glDrawElements(GL_TRIANGLES, static_cast<GLsizei>(indices.size()), GL_UNSIGNED_INT, 0);
 			glBindVertexArray(0);
 		}

@@ -7,6 +7,7 @@ layout (location = 3) in vec2 vertex_texcoord;
 
 out vec3 vs_position;
 out vec3 vs_color;
+out vec3 vs_normal;
 out vec2 vs_texcoord;
 
 uniform mat4 ModelMatrix;
@@ -17,6 +18,7 @@ void main()
 {
     vs_position = vec3(ModelMatrix * vec4(vertex_position, 1.f));
     vs_color = vertex_color;
+    vs_normal = mat3(transpose(inverse(ModelMatrix))) * vertex_normal;
     vs_texcoord = vertex_texcoord;
 
     gl_Position = ProjectionMatrix * ViewMatrix * ModelMatrix * vec4(vertex_position, 1.f);
