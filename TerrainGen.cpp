@@ -10,6 +10,16 @@ extern "C"
     __declspec(dllexport) int AmdPowerXpressRequestHighPerformance = 1;
 }
 
+struct TerrainParams
+{
+    int m = 50;
+    int n = 50;
+    int numHills = 15;
+    float maxHillRadius = 20.0f;
+    float heightScale = 0.5f;
+    int smoothingPasses = 2;
+};
+
 int main()
 {
 	if (!glfwInit())
@@ -26,7 +36,7 @@ int main()
 	glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
 	glfwWindowHint(GLFW_RESIZABLE, GL_TRUE);
 
-	GLFWwindow* window = glfwCreateWindow(WINDOW_WIDTH, WINDOW_HEIGHT, "Terrain Generator", nullptr, nullptr);
+	GLFWwindow* window = glfwCreateWindow(WINDOW_WIDTH, WINDOW_HEIGHT, "Terrain & Cube Generator", nullptr, nullptr);
 	if (!window)
 	{
 		std::cerr << "ERROR::MAIN::WINDOW_INIT_FAILED\n";
@@ -63,74 +73,198 @@ int main()
 
 	Shader coreShader("shaders/vertex_core.glsl", "shaders/fragment_core.glsl");
 
-	// std::srand removed — generateTerrain now seeds its own mt19937 per call.
+	// Active terrain parameters being edited in UI
+	TerrainParams activeParams;
 
-	int m = 50;
-	int n = 50;
-	float heightScale = 0.5f;
-	int numHills = 15;
-	float maxHillRadius = 20.0f;
-	int smoothingPasses = 2;   // box-blur passes to remove height outliers
+	// Active cube generator parameters being edited in UI
+	CubeParams activeCubeParams;
 
+	// Render thread persistent terrain buffers
 	std::vector<Vertex> vertices;
 	std::vector<GLuint> indices;
 
-	// --- Async terrain generation state ---
-	std::future<void>   terrainFuture;
+	// Cube persistent buffers
+	std::vector<Vertex> cubeVertices;
+	std::vector<GLuint> cubeIndices;
+
+	// Request synchronization state
+	std::mutex requestMutex;
+	TerrainParams targetParams = activeParams;
+	uint64_t targetVersion = 0;
+	bool stopRequested = false;
+
+	// Async worker state
+	std::future<void> terrainFuture;
+	std::atomic<bool> isGenerating{ false };
+
+	// Pending buffer handoff (protected by pendingMutex)
+	std::mutex pendingMutex;
 	std::vector<Vertex> pendingVertices;
 	std::vector<GLuint> pendingIndices;
-	std::atomic<bool>   isGenerating{ false };
-	std::mutex          pendingMutex;
-	bool                uploadPending{ false };
+	bool pendingTopologyChanged = false;
+	bool uploadPending = false;
+	uint64_t pendingVersion = 0;
 
-
+	// Terrain OpenGL Buffers
 	GLuint vao, vbo, ebo;
 	glGenVertexArrays(1, &vao);
 	glGenBuffers(1, &vbo);
 	glGenBuffers(1, &ebo);
 
-	auto uploadToGPU = [&]() {
-		glBindVertexArray(vao);
-		glBindBuffer(GL_ARRAY_BUFFER, vbo);
-		glBufferData(GL_ARRAY_BUFFER, vertices.size() * sizeof(Vertex), vertices.data(), GL_STATIC_DRAW);
-		glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ebo);
-		glBufferData(GL_ELEMENT_ARRAY_BUFFER, indices.size() * sizeof(GLuint), indices.data(), GL_STATIC_DRAW);
+	// Configure Terrain VAO attribute pointers
+	glBindVertexArray(vao);
+	glBindBuffer(GL_ARRAY_BUFFER, vbo);
+	glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ebo);
 
-		glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex), (GLvoid*)offsetof(Vertex, position));
-		glEnableVertexAttribArray(0);
-		glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex), (GLvoid*)offsetof(Vertex, color));
-		glEnableVertexAttribArray(1);
-		glVertexAttribPointer(2, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex), (GLvoid*)offsetof(Vertex, normal));
-		glEnableVertexAttribArray(2);
-		glVertexAttribPointer(3, 2, GL_FLOAT, GL_FALSE, sizeof(Vertex), (GLvoid*)offsetof(Vertex, texCoord));
-		glEnableVertexAttribArray(3);
+	glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex), (GLvoid*)offsetof(Vertex, position));
+	glEnableVertexAttribArray(0);
+	glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex), (GLvoid*)offsetof(Vertex, color));
+	glEnableVertexAttribArray(1);
+	glVertexAttribPointer(2, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex), (GLvoid*)offsetof(Vertex, normal));
+	glEnableVertexAttribArray(2);
+	glVertexAttribPointer(3, 2, GL_FLOAT, GL_FALSE, sizeof(Vertex), (GLvoid*)offsetof(Vertex, texCoord));
+	glEnableVertexAttribArray(3);
+
+	glBindVertexArray(0);
+
+	// Cube OpenGL Buffers
+	GLuint cubeVAO, cubeVBO, cubeEBO;
+	glGenVertexArrays(1, &cubeVAO);
+	glGenBuffers(1, &cubeVBO);
+	glGenBuffers(1, &cubeEBO);
+
+	// Configure Cube VAO attribute pointers
+	glBindVertexArray(cubeVAO);
+	glBindBuffer(GL_ARRAY_BUFFER, cubeVBO);
+	glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, cubeEBO);
+
+	glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex), (GLvoid*)offsetof(Vertex, position));
+	glEnableVertexAttribArray(0);
+	glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex), (GLvoid*)offsetof(Vertex, color));
+	glEnableVertexAttribArray(1);
+	glVertexAttribPointer(2, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex), (GLvoid*)offsetof(Vertex, normal));
+	glEnableVertexAttribArray(2);
+	glVertexAttribPointer(3, 2, GL_FLOAT, GL_FALSE, sizeof(Vertex), (GLvoid*)offsetof(Vertex, texCoord));
+	glEnableVertexAttribArray(3);
+
+	glBindVertexArray(0);
+
+	// Function to generate and upload cube mesh to GPU
+	auto updateCubeMesh = [&]() {
+		generateCubes(activeCubeParams, cubeVertices, cubeIndices);
+
+		glBindVertexArray(cubeVAO);
+		glBindBuffer(GL_ARRAY_BUFFER, cubeVBO);
+		glBufferData(GL_ARRAY_BUFFER, cubeVertices.size() * sizeof(Vertex), cubeVertices.data(), GL_DYNAMIC_DRAW);
+
+		glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, cubeEBO);
+		glBufferData(GL_ELEMENT_ARRAY_BUFFER, cubeIndices.size() * sizeof(GLuint), cubeIndices.data(), GL_DYNAMIC_DRAW);
+
 		glBindVertexArray(0);
 	};
 
-	// --- Helper: launch terrain generation on a worker thread ---
-	// Captures all terrain parameters by VALUE (snapshot) so slider drags
-	// mid-generation cannot cause a data race.
-	auto launchGeneration = [&]() {
-		if (isGenerating) return;          // ignore if already running
-		isGenerating = true;
-		int    sm = m, sn = n, sHills = numHills, sPasses = smoothingPasses;
-		float  sRadius = maxHillRadius, sScale = heightScale;
-		terrainFuture = std::async(std::launch::async, [&, sm, sn, sHills, sRadius, sScale, sPasses]() {
-			std::vector<Vertex>  v;
-			std::vector<GLuint>  idx;
-			generateTerrain(sm, sn, sHills, sRadius, sScale, sPasses, v, idx);
+	// Initial generation of cubes
+	updateCubeMesh();
+
+	// --- Worker function for terrain generation ---
+	auto runWorker = [&]() {
+		std::vector<float>  workerHeights;
+		std::vector<float>  workerTemp;
+		std::vector<Vertex> workerVertices;
+		std::vector<GLuint> workerIndices;
+		int workerCurrentM = 0;
+		int workerCurrentN = 0;
+
+		while (true)
+		{
+			TerrainParams paramsSnapshot;
+			uint64_t versionSnapshot = 0;
+			bool shouldStop = false;
+
+			{
+				std::lock_guard<std::mutex> lk(requestMutex);
+				if (stopRequested)
+				{
+					shouldStop = true;
+				}
+				else
+				{
+					paramsSnapshot = targetParams;
+					versionSnapshot = targetVersion;
+				}
+			}
+
+			if (shouldStop)
+				break;
+
+			bool topologyChanged = (paramsSnapshot.m != workerCurrentM || paramsSnapshot.n != workerCurrentN);
+			if (topologyChanged)
+			{
+				workerCurrentM = paramsSnapshot.m;
+				workerCurrentN = paramsSnapshot.n;
+				initStaticVertices(paramsSnapshot.m, paramsSnapshot.n, workerVertices);
+				generateTerrainIndices(paramsSnapshot.m, paramsSnapshot.n, workerIndices);
+			}
+
+			generateTerrainHeights(
+				paramsSnapshot.m, paramsSnapshot.n,
+				paramsSnapshot.numHills, paramsSnapshot.maxHillRadius,
+				paramsSnapshot.heightScale, paramsSnapshot.smoothingPasses,
+				workerHeights, workerTemp
+			);
+
+			updateTerrainVertices(
+				paramsSnapshot.m, paramsSnapshot.n,
+				workerHeights, workerVertices
+			);
+
 			{
 				std::lock_guard<std::mutex> lk(pendingMutex);
-				pendingVertices = std::move(v);
-				pendingIndices  = std::move(idx);
-				uploadPending   = true;
+				if (versionSnapshot > pendingVersion)
+				{
+					pendingVersion = versionSnapshot;
+					pendingVertices = workerVertices;
+					if (topologyChanged)
+					{
+						pendingIndices = workerIndices;
+						pendingTopologyChanged = true;
+					}
+					uploadPending = true;
+				}
 			}
-			isGenerating = false;
-		});
+
+			{
+				std::lock_guard<std::mutex> lk(requestMutex);
+				if (stopRequested || targetVersion == versionSnapshot)
+				{
+					isGenerating = false;
+					break;
+				}
+			}
+		}
 	};
 
-	// Kick off the initial terrain asynchronously
-	launchGeneration();
+	// Launch worker if not already running, or update target version/params if running ("latest state wins")
+	auto requestGeneration = [&]() {
+		{
+			std::lock_guard<std::mutex> lk(requestMutex);
+			targetParams = activeParams;
+			targetVersion++;
+		}
+
+		bool expected = false;
+		if (isGenerating.compare_exchange_strong(expected, true))
+		{
+			if (terrainFuture.valid())
+			{
+				terrainFuture.get();
+			}
+			terrainFuture = std::async(std::launch::async, runWorker);
+		}
+	};
+
+	// Kick off initial terrain generation
+	requestGeneration();
 
 	glm::mat4 ModelMatrix(1.f);
 	glm::mat4 ProjectionMatrix = glm::perspective(glm::radians(45.f), static_cast<float>(WINDOW_WIDTH) / WINDOW_HEIGHT, 0.1f, 200.f);
@@ -140,28 +274,51 @@ int main()
 		updateInput(window);
 		glfwPollEvents();
 
-		// --- Check if the worker thread finished; swap buffers and upload on the GL thread ---
+		// --- Upload pending terrain results to GPU on main/render thread ---
 		if (uploadPending)
 		{
 			std::lock_guard<std::mutex> lk(pendingMutex);
 			if (uploadPending)
 			{
-				vertices      = std::move(pendingVertices);
-				indices       = std::move(pendingIndices);
-				uploadToGPU();
+				vertices = std::move(pendingVertices);
+
+				if (pendingTopologyChanged)
+				{
+					indices = std::move(pendingIndices);
+
+					glBindVertexArray(vao);
+					glBindBuffer(GL_ARRAY_BUFFER, vbo);
+					glBufferData(GL_ARRAY_BUFFER, vertices.size() * sizeof(Vertex), vertices.data(), GL_DYNAMIC_DRAW);
+
+					glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, ebo);
+					glBufferData(GL_ELEMENT_ARRAY_BUFFER, indices.size() * sizeof(GLuint), indices.data(), GL_STATIC_DRAW);
+
+					glBindVertexArray(0);
+					pendingTopologyChanged = false;
+				}
+				else
+				{
+					glBindBuffer(GL_ARRAY_BUFFER, vbo);
+					glBufferSubData(GL_ARRAY_BUFFER, 0, vertices.size() * sizeof(Vertex), vertices.data());
+					glBindBuffer(GL_ARRAY_BUFFER, 0);
+				}
+
 				uploadPending = false;
 			}
 		}
 
-		// Start the Dear ImGui frame
+		// Start Dear ImGui frame
 		ImGui_ImplOpenGL3_NewFrame();
 		ImGui_ImplGlfw_NewFrame();
 		ImGui::NewFrame();
 
+		// ----------------------------------------------------
+		// UI Window 1: Terrain Settings
+		// ----------------------------------------------------
 		{
 			ImGui::Begin("Terrain Settings");
 
-			// Spinner animation while the worker thread is busy
+			// Spinner animation while generation is running in background
 			if (isGenerating)
 			{
 				const char* spinFrames[] = { "| Generating...", "/ Generating...", "- Generating...", "\\ Generating..." };
@@ -170,32 +327,27 @@ int main()
 				ImGui::Separator();
 			}
 
-			// Disable all controls while a generation is in flight
-			ImGui::BeginDisabled(isGenerating.load());
-
 			ImGui::Text("Grid Dimensions");
 			bool changed = false;
-			changed |= ImGui::SliderInt("Length", &m, 2, 200);
-			changed |= ImGui::SliderInt("Width", &n, 2, 200);
+			changed |= ImGui::SliderInt("Length", &activeParams.m, 2, 200);
+			changed |= ImGui::SliderInt("Width", &activeParams.n, 2, 200);
 
 			ImGui::Separator();
 			ImGui::Text("Hill Settings");
-			changed |= ImGui::SliderInt("Number of Hills", &numHills, 1, 100);
-			changed |= ImGui::SliderFloat("Max Hill Radius", &maxHillRadius, 1.0f, 50.0f);
-			changed |= ImGui::SliderFloat("Height Scale", &heightScale, 0.0f, 2.0f);
+			changed |= ImGui::SliderInt("Number of Hills", &activeParams.numHills, 1, 100);
+			changed |= ImGui::SliderFloat("Max Hill Radius", &activeParams.maxHillRadius, 1.0f, 50.0f);
+			changed |= ImGui::SliderFloat("Height Scale", &activeParams.heightScale, 0.0f, 2.0f);
 			ImGui::Separator();
 			ImGui::Text("Smoothing");
 			ImGui::SetNextItemWidth(-1);
-			changed |= ImGui::SliderInt("Blur Passes", &smoothingPasses, 0, 10);
+			changed |= ImGui::SliderInt("Blur Passes", &activeParams.smoothingPasses, 0, 10);
 			ImGui::TextDisabled("0 = raw, 1-2 = smooth, 5+ = very smooth");
 
-			// Auto-regen on any slider change (no size cap — generation is non-blocking now)
+			// Auto-regen on any slider change or explicit button click ("latest state wins")
 			if (ImGui::Button("Regenerate Terrain") || changed)
 			{
-				launchGeneration();
+				requestGeneration();
 			}
-
-			ImGui::EndDisabled();
 
 			ImGui::Separator();
 			ImGui::Text("Controls:");
@@ -203,6 +355,41 @@ int main()
 			ImGui::BulletText("Right Mouse / WASD: Pan");
 			ImGui::BulletText("Q/E: Up/Down");
 			ImGui::BulletText("Scroll: Zoom");
+
+			ImGui::End();
+		}
+
+		// ----------------------------------------------------
+		// UI Window 2: Cube Generator Settings
+		// ----------------------------------------------------
+		{
+			ImGui::Begin("Cube Generator Settings");
+
+			bool cubeChanged = false;
+			ImGui::Text("Cube Population");
+			cubeChanged |= ImGui::SliderInt("Number of Cubes", &activeCubeParams.count, 0, 500);
+
+			ImGui::Separator();
+			ImGui::Text("Base Dimensions");
+			cubeChanged |= ImGui::SliderFloat("Width", &activeCubeParams.width, 0.1f, 20.0f);
+			cubeChanged |= ImGui::SliderFloat("Height", &activeCubeParams.height, 0.1f, 20.0f);
+			cubeChanged |= ImGui::SliderFloat("Depth", &activeCubeParams.depth, 0.1f, 20.0f);
+
+			ImGui::Separator();
+			ImGui::Text("Randomness Parameters");
+			cubeChanged |= ImGui::SliderFloat("Dimension Randomness", &activeCubeParams.dimensionRandomness, 0.0f, 2.0f);
+			cubeChanged |= ImGui::SliderFloat("Scale of Randomness", &activeCubeParams.scaleOfRandomness, 1.0f, 100.0f);
+
+			if (ImGui::Button("Reseed Cubes"))
+			{
+				activeCubeParams.seed += 1;
+				cubeChanged = true;
+			}
+
+			if (cubeChanged)
+			{
+				updateCubeMesh();
+			}
 
 			ImGui::End();
 		}
@@ -217,10 +404,23 @@ int main()
 		coreShader.setMat4fv(ViewMatrix, "ViewMatrix");
 		coreShader.setMat4fv(ProjectionMatrix, "ProjectionMatrix");
 
-		glBindVertexArray(vao);
-		glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
-		glDrawElements(GL_TRIANGLES, static_cast<GLsizei>(indices.size()), GL_UNSIGNED_INT, 0);
-		glBindVertexArray(0);
+		// Draw terrain mesh (wireframe mode)
+		if (!indices.empty())
+		{
+			glBindVertexArray(vao);
+			glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
+			glDrawElements(GL_TRIANGLES, static_cast<GLsizei>(indices.size()), GL_UNSIGNED_INT, 0);
+			glBindVertexArray(0);
+		}
+
+		// Draw cube generator mesh (solid filled mode alongside terrain)
+		if (!cubeIndices.empty())
+		{
+			glBindVertexArray(cubeVAO);
+			glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+			glDrawElements(GL_TRIANGLES, static_cast<GLsizei>(cubeIndices.size()), GL_UNSIGNED_INT, 0);
+			glBindVertexArray(0);
+		}
 
 		// Rendering ImGui
 		ImGui::Render();
@@ -229,7 +429,17 @@ int main()
 		glfwSwapBuffers(window);
 	}
 
-	// Cleanup
+	// Signal worker thread to terminate and wait for completion
+	{
+		std::lock_guard<std::mutex> lk(requestMutex);
+		stopRequested = true;
+	}
+	if (terrainFuture.valid())
+	{
+		terrainFuture.get();
+	}
+
+	// Cleanup OpenGL & GLFW
 	ImGui_ImplOpenGL3_Shutdown();
 	ImGui_ImplGlfw_Shutdown();
 	ImGui::DestroyContext();
@@ -237,6 +447,10 @@ int main()
 	glDeleteVertexArrays(1, &vao);
 	glDeleteBuffers(1, &vbo);
 	glDeleteBuffers(1, &ebo);
+
+	glDeleteVertexArrays(1, &cubeVAO);
+	glDeleteBuffers(1, &cubeVBO);
+	glDeleteBuffers(1, &cubeEBO);
 
 	glfwDestroyWindow(window);
 	glfwTerminate();

@@ -39,3 +39,4 @@
 #include "../objects/frameBufferSizeCallback.h"
 
 #include "../mesh/generator.h"
+#include "../mesh/cube.h"
