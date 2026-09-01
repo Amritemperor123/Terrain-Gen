@@ -3,8 +3,12 @@
 #include<fstream>
 #include<string>
 #include<vector>
+#include <future>
+#include <atomic>
+#include <mutex>
+#include <random>
 
-#include<glad/glad.h>
+#include "../Linking/include/glad/glad.h"
 #include<glfw3.h>
 
 #include<glm/glm.hpp>
@@ -25,12 +29,13 @@
 #include "imgui_impl_glfw.h"
 #include "imgui_impl_opengl3.h"
 
-struct Vertex
-{
-	glm::vec3 position;
-	glm::vec3 color;
-	glm::vec3 normal;
-	glm::vec2 texCoord;
-};
+#include "../objects/vertex.h"
 
 #include"model_placeholder.h"
+#include "../objects/orbitCamera.h"
+#include "../objects/mouseCallback.h"
+#include "../objects/scrollCallback.h"
+#include "../objects/updateInput.h"
+#include "../objects/frameBufferSizeCallback.h"
+
+#include "../mesh/generator.h"
