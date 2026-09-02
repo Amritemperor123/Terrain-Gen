@@ -38,5 +38,5 @@
 #include "../objects/updateInput.h"
 #include "../objects/frameBufferSizeCallback.h"
 
-#include "../mesh/generator.h"
-#include "../mesh/cube.h"
+#include "../mesh/terrainGenerator.h"
+#include "../mesh/cubeGenerator.h"

@@ -18,6 +18,7 @@ struct TerrainParams
     float maxHillRadius = 20.0f;
     float heightScale = 0.5f;
     int smoothingPasses = 2;
+    unsigned int seed = 1337;
 };
 
 int main()
@@ -28,15 +29,23 @@ int main()
 		return -1;
 	}
 
-	const int WINDOW_WIDTH = 1280;
-	const int WINDOW_HEIGHT = 720;
+	GLFWmonitor* primaryMonitor = glfwGetPrimaryMonitor();
+	const GLFWvidmode* mode = primaryMonitor ? glfwGetVideoMode(primaryMonitor) : nullptr;
+
+	int windowWidth = mode ? mode->width : 1280;
+	int windowHeight = mode ? mode->height : 720;
 
 	glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
 	glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
 	glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
 	glfwWindowHint(GLFW_RESIZABLE, GL_TRUE);
 
-	GLFWwindow* window = glfwCreateWindow(WINDOW_WIDTH, WINDOW_HEIGHT, "Terrain & Cube Generator", nullptr, nullptr);
+	GLFWwindow* window = glfwCreateWindow(windowWidth, windowHeight, "Terrain & Cube Generator", primaryMonitor, nullptr);
+	if (!window)
+	{
+		std::cerr << "WARNING::MAIN::FULLSCREEN_FAILED, falling back to windowed mode...\n";
+		window = glfwCreateWindow(1280, 720, "Terrain & Cube Generator", nullptr, nullptr);
+	}
 	if (!window)
 	{
 		std::cerr << "ERROR::MAIN::WINDOW_INIT_FAILED\n";
@@ -67,7 +76,7 @@ int main()
 	ImGui_ImplGlfw_InitForOpenGL(window, true);
 	ImGui_ImplOpenGL3_Init("#version 330");
 
-	glViewport(0, 0, WINDOW_WIDTH, WINDOW_HEIGHT);
+	glViewport(0, 0, windowWidth, windowHeight);
 	glClearColor(0.1f, 0.1f, 0.1f, 1.f);
 	glEnable(GL_DEPTH_TEST);
 
@@ -210,6 +219,7 @@ int main()
 				paramsSnapshot.m, paramsSnapshot.n,
 				paramsSnapshot.numHills, paramsSnapshot.maxHillRadius,
 				paramsSnapshot.heightScale, paramsSnapshot.smoothingPasses,
+				paramsSnapshot.seed,
 				workerHeights, workerTemp
 			);
 
@@ -267,14 +277,19 @@ int main()
 	requestGeneration();
 
 	glm::mat4 ModelMatrix(1.f);
-	glm::mat4 ProjectionMatrix = glm::perspective(glm::radians(45.f), static_cast<float>(WINDOW_WIDTH) / WINDOW_HEIGHT, 0.1f, 200.f);
-
 	bool wireframeMode = false;
 
 	while (!glfwWindowShouldClose(window))
 	{
 		updateInput(window);
 		glfwPollEvents();
+
+		int displayW, displayH;
+		glfwGetFramebufferSize(window, &displayW, &displayH);
+		glViewport(0, 0, displayW, displayH);
+
+		float aspect = (displayH > 0) ? (static_cast<float>(displayW) / static_cast<float>(displayH)) : 1.0f;
+		glm::mat4 ProjectionMatrix = glm::perspective(glm::radians(45.f), aspect, 0.1f, 200.f);
 
 		// --- Upload pending terrain results to GPU on main/render thread ---
 		if (uploadPending)
@@ -315,9 +330,11 @@ int main()
 		ImGui::NewFrame();
 
 		// ----------------------------------------------------
-		// UI Window 1: Terrain Settings
+		// UI Window 1: Terrain Settings (Snapped to Left)
 		// ----------------------------------------------------
 		{
+			ImGui::SetNextWindowPos(ImVec2(10.0f, 10.0f), ImGuiCond_Always);
+			ImGui::SetNextWindowSize(ImVec2(340.0f, static_cast<float>(displayH) - 20.0f), ImGuiCond_Always);
 			ImGui::Begin("Terrain Settings");
 
 			// Spinner animation while generation is running in background
@@ -345,6 +362,21 @@ int main()
 			changed |= ImGui::SliderInt("Blur Passes", &activeParams.smoothingPasses, 0, 10);
 			ImGui::TextDisabled("0 = raw, 1-2 = smooth, 5+ = very smooth");
 
+			ImGui::Separator();
+			ImGui::Text("Random Seed");
+			int terrainSeed = static_cast<int>(activeParams.seed);
+			if (ImGui::InputInt("Terrain Seed", &terrainSeed))
+			{
+				if (terrainSeed < 0) terrainSeed = 0;
+				activeParams.seed = static_cast<unsigned int>(terrainSeed);
+				changed = true;
+			}
+			if (ImGui::Button("Randomize Seed"))
+			{
+				activeParams.seed += 1;
+				changed = true;
+			}
+
 			// Auto-regen on any slider change or explicit button click ("latest state wins")
 			if (ImGui::Button("Regenerate Terrain") || changed)
 			{
@@ -366,9 +398,11 @@ int main()
 		}
 
 		// ----------------------------------------------------
-		// UI Window 2: Cube Generator Settings
+		// UI Window 2: Cube Generator Settings (Snapped to Right)
 		// ----------------------------------------------------
 		{
+			ImGui::SetNextWindowPos(ImVec2(static_cast<float>(displayW) - 10.0f, 10.0f), ImGuiCond_Always, ImVec2(1.0f, 0.0f));
+			ImGui::SetNextWindowSize(ImVec2(340.0f, static_cast<float>(displayH) - 20.0f), ImGuiCond_Always);
 			ImGui::Begin("Cube Generator Settings");
 
 			bool cubeChanged = false;
@@ -386,7 +420,16 @@ int main()
 			cubeChanged |= ImGui::SliderFloat("Dimension Randomness", &activeCubeParams.dimensionRandomness, 0.0f, 2.0f);
 			cubeChanged |= ImGui::SliderFloat("Scale of Randomness", &activeCubeParams.scaleOfRandomness, 1.0f, 100.0f);
 
-			if (ImGui::Button("Reseed Cubes"))
+			ImGui::Separator();
+			ImGui::Text("Random Seed");
+			int cubeSeed = static_cast<int>(activeCubeParams.seed);
+			if (ImGui::InputInt("Cube Seed", &cubeSeed))
+			{
+				if (cubeSeed < 0) cubeSeed = 0;
+				activeCubeParams.seed = static_cast<unsigned int>(cubeSeed);
+				cubeChanged = true;
+			}
+			if (ImGui::Button("Randomize Cubes"))
 			{
 				activeCubeParams.seed += 1;
 				cubeChanged = true;

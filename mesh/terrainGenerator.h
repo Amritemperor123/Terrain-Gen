@@ -95,6 +95,7 @@ inline void generateTerrainHeights(
     float maxRadius,
     float heightScale,
     int smoothingPasses,
+    unsigned int seed,
     std::vector<float>& heights,
     std::vector<float>& temp)
 {
@@ -109,17 +110,15 @@ inline void generateTerrainHeights(
 
     temp.resize(vertexCount);
 
-    std::mt19937 rng(
-        static_cast<unsigned int>(
-            std::random_device{}()));
-
-    std::uniform_real_distribution<float> dist01(0.0f, 1.0f);
-
+    const unsigned int baseSeed = (seed != 0 ? seed : 1337);
     constexpr float PI = 3.14159265358979323846f;
 
-    // Generate hills
+    // Generate hills using per-hill deterministic seeding based on baseSeed
     for (int k = 0; k < numHills; ++k)
     {
+        std::mt19937 rng(baseSeed + static_cast<unsigned int>(k) * 2654435761u);
+        std::uniform_real_distribution<float> dist01(0.0f, 1.0f);
+
         const float cx =
             dist01(rng) * static_cast<float>(m - 1);
 
@@ -333,12 +332,13 @@ inline void generateTerrain(
     float heightScale,
     int smoothingPasses,
     std::vector<Vertex>& vertices,
-    std::vector<GLuint>& indices)
+    std::vector<GLuint>& indices,
+    unsigned int seed = 1337)
 {
     std::vector<float> heights;
     std::vector<float> temp;
     initStaticVertices(m, n, vertices);
     generateTerrainIndices(m, n, indices);
-    generateTerrainHeights(m, n, numHills, maxRadius, heightScale, smoothingPasses, heights, temp);
+    generateTerrainHeights(m, n, numHills, maxRadius, heightScale, smoothingPasses, seed, heights, temp);
     updateTerrainVertices(m, n, heights, vertices);
 }

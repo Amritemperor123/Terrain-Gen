@@ -7,24 +7,8 @@
 #include <glm/glm.hpp>
 #include "../Linking/include/glad/glad.h"
 #include "../objects/vertex.h"
+#include "../objects/cube.h"
 
-// ----------------------------------------------------------------------------
-// Procedural Cube Generator Parameters
-// ----------------------------------------------------------------------------
-struct CubeParams
-{
-    int count = 30;                  // Number of cubes in the scene
-    float width = 1.5f;              // Base width (X scale)
-    float height = 1.5f;             // Base height (Y scale)
-    float depth = 1.5f;              // Base depth (Z scale)
-    float dimensionRandomness = 0.5f; // Randomness factor for dimensions [0.0 - 2.0]
-    float scaleOfRandomness = 40.0f;  // Spatial distribution spread across terrain
-    unsigned int seed = 1337;        // Random seed for reproducible placement
-};
-
-// ----------------------------------------------------------------------------
-// Procedural Cube Generator Function (Batch mesh generation)
-// ----------------------------------------------------------------------------
 inline void generateCubes(
     const CubeParams& params,
     std::vector<Vertex>& vertices,
@@ -41,12 +25,14 @@ inline void generateCubes(
     vertices.reserve(totalVertices);
     indices.reserve(totalIndices);
 
-    std::mt19937 rng(params.seed != 0 ? params.seed : 1337);
-    std::uniform_real_distribution<float> distNeg1To1(-1.0f, 1.0f);
-    std::uniform_real_distribution<float> dist0To1(0.0f, 1.0f);
+    const unsigned int baseSeed = (params.seed != 0 ? params.seed : 1337);
 
     for (int k = 0; k < params.count; ++k)
     {
+        std::mt19937 rng(baseSeed + static_cast<unsigned int>(k) * 2654435761u);
+        std::uniform_real_distribution<float> distNeg1To1(-1.0f, 1.0f);
+        std::uniform_real_distribution<float> dist0To1(0.0f, 1.0f);
+
         // Random spatial placement (X, Z) within scaleOfRandomness range
         float posX = distNeg1To1(rng) * params.scaleOfRandomness * 0.5f;
         float posZ = distNeg1To1(rng) * params.scaleOfRandomness * 0.5f;
@@ -60,8 +46,7 @@ inline void generateCubes(
         float h = std::max(0.1f, params.height * randH);
         float d = std::max(0.1f, params.depth * randD);
 
-        // Place cube standing above ground level with subtle elevation scatter
-        float posY = (h * 0.5f) + (dist0To1(rng) * 2.0f);
+        float posY = dist0To1(rng) * 2.0f;
 
         // Procedural color variation per cube (warm orange/brownish tint)
         glm::vec3 cubeColor(
